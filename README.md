@@ -46,8 +46,10 @@ git clone https://github.com/yukazakiri/themed-wallpapers.git ~/Pictures/ThemedW
 ## Total
 
 - **22 themes**
-- **30 wallpapers each**
+- **~53 wallpapers each (avg)** · 1162 wallpapers total
 - **~1 GB**
+
+> 💾 Pre-packaged ZIPs for each theme (and an all-in-one bundle) are available on the [**Releases**](../../releases) page.
 
 ## Credits
 

@@ -1,0 +1,222 @@
+name: 📦 Package & Release Wallpapers
+
+on:
+  push:
+    branches:
+      - master
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── Checkout ──────────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history needed for diff & tag discovery
+
+      # ── Determine next version ────────────────────────────────────────────────
+      - name: Compute next version
+        id: version
+        run: |
+          # Get the latest semver tag (e.g. v0.1.0); default to v0.0.0 if none exist
+          LATEST=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' \
+                   | sort -V | tail -1)
+          LATEST=${LATEST:-v0.0.0}
+
+          # Strip leading 'v' and split
+          IFS='.' read -r MAJOR MINOR PATCH <<< "${LATEST#v}"
+
+          # Increment patch
+          PATCH=$((PATCH + 1))
+          NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+
+          echo "latest_tag=${LATEST}"  >> "$GITHUB_OUTPUT"
+          echo "new_tag=${NEW_TAG}"    >> "$GITHUB_OUTPUT"
+          echo "New version will be: ${NEW_TAG}"
+
+      # ── Detect changed themes ─────────────────────────────────────────────────
+      - name: Detect changed / added wallpapers
+        id: changes
+        run: |
+          LATEST_TAG="${{ steps.version.outputs.latest_tag }}"
+          THEMES=(arcdark atomdark catppuccin cyberpunk dracula everforest \
+                  github-light gruvbox material night-owl nord oceanic-next \
+                  onedark shades-of-purple solarized sunset-aurant \
+                  sunset-saffron sunset-tangerine synthwave-84 \
+                  tokyo-dark tokyo-moon tokyo-storm)
+
+          NOTES=""
+          if [ "$LATEST_TAG" = "v0.0.0" ]; then
+            # First release – report everything
+            NOTES="🎉 **Initial release** — all themes packaged.\n\n"
+            NOTES+="### Themes included\n"
+            for theme in "${THEMES[@]}"; do
+              COUNT=$(find "${theme}" -maxdepth 1 \( -name '*.jpg' -o -name '*.png' -o -name '*.webp' \) 2>/dev/null | wc -l)
+              NOTES+="- **${theme}** — ${COUNT} wallpapers\n"
+            done
+          else
+            # Subsequent releases – show only what changed
+            CHANGED=$(git diff --name-only "${LATEST_TAG}"..HEAD 2>/dev/null || git diff --name-only HEAD~1..HEAD)
+
+            declare -A THEME_ADDED
+            declare -A THEME_MODIFIED
+            declare -A THEME_REMOVED
+            SHOWCASE_IMAGE=""
+
+            while IFS= read -r file; do
+              # Only care about image files inside a theme folder
+              if [[ "$file" =~ ^([^/]+)/(.+\.(jpg|png|webp))$ ]]; then
+                THEME="${BASH_REMATCH[1]}"
+                FILE="${BASH_REMATCH[2]}"
+                STATUS=$(git diff --name-status "${LATEST_TAG}"..HEAD -- "$file" | awk '{print $1}' | head -1)
+                case "$STATUS" in
+                  A*)
+                    THEME_ADDED["$THEME"]+="    - \`${FILE}\`\n"
+                    if [ -z "$SHOWCASE_IMAGE" ]; then
+                      SHOWCASE_IMAGE="${file}"
+                    fi
+                    ;;
+                  M*)  THEME_MODIFIED["$THEME"]+="    - \`${FILE}\`\n" ;;
+                  D*)  THEME_REMOVED["$THEME"]+="    - \`${FILE}\`\n" ;;
+                esac
+              fi
+            done <<< "$CHANGED"
+
+            HAS_CHANGES=false
+
+            for theme in "${!THEME_ADDED[@]}" "${!THEME_MODIFIED[@]}" "${!THEME_REMOVED[@]}"; do
+              HAS_CHANGES=true
+            done
+
+            if [ "$HAS_CHANGES" = "false" ]; then
+              NOTES="### 🔧 Maintenance release\n\nNo wallpaper changes detected.\n"
+            else
+              NOTES="### 🖼️ Wallpaper Changes\n\n"
+              ALL_THEMES=()
+              for t in "${!THEME_ADDED[@]}" "${!THEME_MODIFIED[@]}" "${!THEME_REMOVED[@]}"; do
+                ALL_THEMES+=("$t")
+              done
+              # Deduplicate
+              UNIQUE_THEMES=($(printf '%s\n' "${ALL_THEMES[@]}" | sort -u))
+
+              for theme in "${UNIQUE_THEMES[@]}"; do
+                TOTAL=$(find "${theme}" -maxdepth 1 \( -name '*.jpg' -o -name '*.png' -o -name '*.webp' \) 2>/dev/null | wc -l)
+                NOTES+="#### \`${theme}\` (${TOTAL} wallpapers now)\n"
+                if [ -n "${THEME_ADDED[$theme]}" ]; then
+                  NOTES+="  - ➕ **Added:**\n${THEME_ADDED[$theme]}"
+                fi
+                if [ -n "${THEME_MODIFIED[$theme]}" ]; then
+                  NOTES+="  - ✏️ **Modified:**\n${THEME_MODIFIED[$theme]}"
+                fi
+                if [ -n "${THEME_REMOVED[$theme]}" ]; then
+                  NOTES+="  - 🗑️ **Removed:**\n${THEME_REMOVED[$theme]}"
+                fi
+                NOTES+="\n"
+              done
+
+              if [ -n "$SHOWCASE_IMAGE" ]; then
+                NOTES+="### 🌟 Showcase\n\n"
+                NOTES+="![Showcase](https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/${SHOWCASE_IMAGE})\n\n"
+              fi
+            fi
+          fi
+
+          # ── Summary stats ──────────────────────────────────────────────────────
+          TOTAL_THEMES=0
+          TOTAL_WALLS=0
+          STATS="\n---\n### 📊 Collection Stats\n| Theme | Wallpapers |\n|-------|------------|\n"
+          for theme in "${THEMES[@]}"; do
+            COUNT=$(find "${theme}" -maxdepth 1 \( -name '*.jpg' -o -name '*.png' -o -name '*.webp' \) 2>/dev/null | wc -l)
+            if [ "$COUNT" -gt 0 ]; then
+              STATS+="| ${theme} | ${COUNT} |\n"
+              TOTAL_THEMES=$((TOTAL_THEMES + 1))
+              TOTAL_WALLS=$((TOTAL_WALLS + COUNT))
+            fi
+          done
+          STATS+="\n**Total: ${TOTAL_WALLS} wallpapers across ${TOTAL_THEMES} themes**\n"
+
+          FULL_NOTES="${NOTES}${STATS}"
+
+          # Write to file so multi-line content is safe
+          printf '%b' "$FULL_NOTES" > /tmp/release_notes.md
+          echo "total_themes=${TOTAL_THEMES}" >> "$GITHUB_OUTPUT"
+          echo "total_walls=${TOTAL_WALLS}"   >> "$GITHUB_OUTPUT"
+
+      # ── Update README totals ──────────────────────────────────────────────────
+      - name: Update README totals
+        run: |
+          TOTAL_THEMES="${{ steps.changes.outputs.total_themes }}"
+          TOTAL_WALLS="${{ steps.changes.outputs.total_walls }}"
+
+          # Compute approximate size  (rough: average ~1 MB per wallpaper)
+          SIZE_MB=$((TOTAL_WALLS * 1))
+          if [ $SIZE_MB -ge 1000 ]; then
+            SIZE_STR="~$((SIZE_MB / 1000)) GB"
+          else
+            SIZE_STR="~${SIZE_MB} MB"
+          fi
+
+          # Replace the Total section lines
+          sed -i "s/^\- \*\*[0-9]* themes\*\*/- **${TOTAL_THEMES} themes**/" README.md
+          sed -i "s/^\- \*\*[0-9]* wallpapers each\*\*/- **$(echo "scale=0; ${TOTAL_WALLS} \/ ${TOTAL_THEMES}" | bc) wallpapers each (avg)**/" README.md
+          sed -i "s/^\- \*\*~[0-9.]* [GM]B\*\*/- **${SIZE_STR}**/" README.md
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if ! git diff --quiet README.md; then
+            git add README.md
+            git commit -m "chore: update README totals [skip ci]"
+            git push
+          fi
+
+      # ── Package individual theme ZIPs ─────────────────────────────────────────
+      - name: Package individual theme ZIPs
+        run: |
+          mkdir -p dist
+          THEMES=(arcdark atomdark catppuccin cyberpunk dracula everforest \
+                  github-light gruvbox material night-owl nord oceanic-next \
+                  onedark shades-of-purple solarized sunset-aurant \
+                  sunset-saffron sunset-tangerine synthwave-84 \
+                  tokyo-dark tokyo-moon tokyo-storm)
+
+          for theme in "${THEMES[@]}"; do
+            if [ -d "$theme" ]; then
+              zip -r "dist/${theme}.zip" "$theme/" \
+                  -x '*/.git/*' -x '*/README.md' -x '*/.DS_Store'
+              echo "Packed: dist/${theme}.zip ($(du -sh "dist/${theme}.zip" | cut -f1))"
+            fi
+          done
+
+      # ── Package all-in-one ZIP ────────────────────────────────────────────────
+      - name: Package all-in-one ZIP
+        run: |
+          zip -r "dist/themed-wallpapers-all.zip" \
+              arcdark atomdark catppuccin cyberpunk dracula everforest \
+              github-light gruvbox material night-owl nord oceanic-next \
+              onedark shades-of-purple solarized sunset-aurant \
+              sunset-saffron sunset-tangerine synthwave-84 \
+              tokyo-dark tokyo-moon tokyo-storm \
+              -x '*/.git/*' -x '*/.DS_Store'
+          echo "Packed all-in-one: dist/themed-wallpapers-all.zip ($(du -sh dist/themed-wallpapers-all.zip | cut -f1))"
+
+      # ── Create GitHub Release ─────────────────────────────────────────────────
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.new_tag }}
+          name: "🎨 Themed Wallpapers ${{ steps.version.outputs.new_tag }}"
+          body_path: /tmp/release_notes.md
+          draft: false
+          prerelease: false
+          files: |
+            dist/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
